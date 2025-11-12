@@ -1,95 +1,105 @@
-Quash Shell — Design & Implementation
+# Quash Shell — Design & Implementation
 
-Author: Larnelle Ankunda
-Course: Operating Systems
-Primary file: shell.c
-Language: C
+**Author:** Larnelle Ankunda  
+**Course:** Operating Systems  
+**Primary File:** `shell.c`  
+**Language:** C
 
-:bookmark_tabs: Summary
+---
 
-Quash is a small UNIX-style shell that runs both built-in and external programs. It supports:
+## 📑 Overview
 
-process creation via fork/execvp
+**Quash** is a lightweight, UNIX-style shell. It can run built-in commands as well as external programs and supports:
 
-foreground/background jobs
+- Process creation with `fork` / `execvp`
+- Foreground and background execution
+- Signal handling (`SIGINT`, `SIGALRM`)
+- A 10‑second timeout for foreground jobs
+- Basic I/O redirection (`<`, `>`)
 
-signal handling (SIGINT, SIGALRM)
+This project was developed incrementally to highlight key OS concepts—processes, signals, file descriptors, and environment variables—while keeping the codebase clear and modular.
 
-10-second timeouts for foreground jobs
+---
 
-basic I/O redirection (<, >)
+## 🎯 Project Goals
 
-The project was built incrementally to showcase core OS ideas—process control, signals, file descriptors, and environment variables—while keeping the code modular and easy to read.
+- **Modularity:** Separate helpers for the prompt, tokenization, built-ins, process control, signals, and I/O.  
+- **Clarity:** Prefer straightforward, instructional code over clever tricks.  
+- **Robustness:** Defensive error handling and graceful recovery paths.  
+- **POSIX Compliance:** Stick to standard interfaces for portability.  
+- **Signal Safety:** Use safe handlers; children reset to defaults where appropriate.
 
-:dart: Goals
+---
 
-Modular structure — helpers for prompt, tokenization, built-ins, process control, signals, and I/O.
+## ⚙️ Architecture at a Glance
 
-Readable first — straightforward, instructional code.
+```text
+readline
+  └─→ tokenize
+        └─→ classify (built-in vs external)
+               ├─→ built-in: run handler and return
+               └─→ external:
+                     ├─ child:  [optional <, > redirection] → execvp
+                     └─ parent: waitpid (unless '&' → run in background)
+```
 
-Robust — clear error messages and safe failure paths.
+### Main Loop (summary)
 
-POSIX-only — standard system calls, no non-portable tricks.
+1. Render prompt with `getcwd()` (format: `/path/to/dir>`).  
+2. Read a line via `fgets()` and split into argv-style tokens.  
+3. Expand `$VAR` tokens using `getenv()`.  
+4. Dispatch to a built-in **or** fork/exec an external program.  
+5. If not a background job, `waitpid()` for completion.
 
-Signal-safe — handlers avoid unsafe work; children restore defaults when needed.
+---
 
-:gear: High-Level Architecture
-readline → tokenize → classify (built-in vs external)
-        ↘ built-in: run handler and return
-         ↘ external: fork → (child) execvp
-                               ↳ (optional) set up < / > redirection
-                     (parent) waitpid unless '&' → background
+## 🚀 Implemented Tasks
 
-Main loop (overview)
+### 1) Prompt & Built-ins
 
-Show prompt with getcwd() (format: /path/to/dir>).
+Prompt example:
 
-fgets() a line and break it into argv-style tokens.
-
-Expand $VAR tokens using getenv().
-
-If command is built-in → run its handler.
-
-Otherwise fork+exec; wait unless it’s a background job.
-
-:rocket: Implemented Tasks (1–7)
-Task 1 — Prompt & Built-ins
-
-Prompt looks like:
-
+```text
 /home/codio>
-
+```
 
 Built-ins:
 
-Command	What it does
-cd [dir]	Change directory (chdir)
-pwd	Print current directory
-echo [args]	Echo arguments; expands $VAR
-setenv VAR VAL	Set an environment variable
-env [VAR]	Show all or a specific variable
-exit	Cleanly terminate the shell
+| Command            | Description                                 |
+|--------------------|---------------------------------------------|
+| `cd [dir]`         | Change the working directory (`chdir`)      |
+| `pwd`              | Print the current directory                  |
+| `echo [args]`      | Print arguments; expands `$VAR`              |
+| `setenv VAR VALUE` | Set an environment variable                  |
+| `env [VAR]`        | Show all env vars or a specific one          |
+| `exit`             | Exit the shell cleanly                       |
 
-Each built-in has its own function (e.g., builtin_cd, builtin_env) to keep things explicit.
+> Each built-in has its own handler (e.g., `builtin_cd`, `builtin_env`) to keep responsibilities clear.
 
-Task 2 — Tokenization & $VAR Expansion
+---
 
-A dedicated tokenize() breaks the input into an argv vector.
+### 2) Tokenization & `$VAR` Expansion
 
-Tokens beginning with $ are replaced by getenv() results, so you can do:
+- A dedicated `tokenize()` produces an argv-like vector.  
+- Tokens beginning with `$` are replaced using `getenv()`:
 
+```sh
 echo $HOME
 cd $HOME
 setenv greeting $USER
+```
 
-Task 3 — Running External Programs
+---
 
-Minimal pattern:
+### 3) Executing External Programs
 
+Typical flow:
+
+```c
 pid_t pid = fork();
 if (pid == 0) {
     execvp(argv[0], argv);      // child: replace image
-    perror("execvp");           // only runs if exec fails
+    perror("execvp");           // only executes on failure
     _exit(127);
 } else if (pid > 0) {
     int status;
@@ -97,94 +107,110 @@ if (pid == 0) {
 } else {
     perror("fork");
 }
+```
 
+- The child inherits file descriptors; the parent reports failures (e.g., “No such file or directory”).
 
-The child inherits descriptors; the parent reports failures (e.g., “No such file or directory”).
+---
 
-Task 4 — Background Jobs (&)
+### 4) Background Jobs (`&`)
 
-A trailing & runs the command without blocking:
+A trailing `&` prevents the shell from blocking:
 
+```text
 /home/codio> ./a.out &
 [background pid 1234]
+```
 
+- The parent skips `waitpid()` and returns to the prompt immediately.
 
-The parent skips waitpid() so the prompt returns immediately.
+---
 
-Task 5 — Ctrl-C (SIGINT) Behavior
+### 5) `Ctrl-C` (SIGINT) Behavior
 
-Problem: Ctrl-C used to kill both the running program and the shell.
-Fix:
+**Initial issue:** `Ctrl-C` terminated both the shell and the running job.  
+**Resolution:**
 
-Install on_sigint() with sigaction.
+- Install `on_sigint()` with `sigaction`.  
+- Handler prints a newline and redraws the prompt without exiting.  
+- Child processes restore default handlers so `Ctrl-C` still interrupts them.
 
-Handler prints a newline and redraws the prompt; the shell keeps running.
+Example:
 
-Children restore default handlers so Ctrl-C still interrupts them.
-
-Result:
-
+```text
 /home/codio> ./a.out
 ...running...
 ^C
 /home/codio>
+```
 
-Task 6 — Foreground Timeout (10s)
+---
 
-Parent sets alarm(10) before waitpid().
+### 6) Foreground Timeout (10s)
 
-If time expires:
+- The parent sets `alarm(10)` before `waitpid()`.  
+- If the timer expires:
 
+```c
 kill(pid, SIGTERM);
 kill(pid, SIGKILL);
+```
 
+- If the child exits early, call `alarm(0)` to cancel.  
+- Prevents hung or runaway tasks from blocking the shell.
 
-If the process ends early, alarm(0) cancels the timer.
+---
 
-Prevents runaway or hung jobs from blocking the shell.
+### 7) I/O Redirection (`<`, `>`)
 
-Task 7 — I/O Redirection (<, >)
+Handled in the **child** process before `execvp()`.
 
-Handled in the child before execvp():
-
-stdout to file (>):
-
+**stdout to file (`>`):**
+```sh
 cat shell.c > output.txt
+```
 
-
-stdin from file (<):
-
+**stdin from file (`<`):**
+```sh
 more < shell.c
+```
 
+Core steps:
 
-Core idea:
-
+```c
 int fd = open(filename, O_CREAT | O_TRUNC | O_WRONLY, 0644);
 dup2(fd, STDOUT_FILENO);
 close(fd);
+```
 
-:warning: Error Handling
+---
 
-Every system call is checked; errors are printed via perror().
+## ⚠️ Error Handling
 
-Syntax issues like a missing filename after < or > are detected.
-
-The shell survives failed commands and returns to the prompt.
+- Every system call is checked and surfaced via `perror()`.  
+- Syntax mistakes (e.g., missing filename after `<` or `>`) are detected.  
+- The shell stays alive and returns to the prompt after failures.
 
 Example messages:
 
+```text
 syntax error: expected file after '>'
 open: No such file or directory
+```
 
-:triangular_ruler: Design Notes
+---
 
-Small, focused helpers keep each feature isolated.
+## 📐 Design Notes
 
-Easy to extend toward pipes (|) and job control.
+- **Focused helpers** keep features decoupled and testable.  
+- **Extension-friendly:** natural next steps include pipelines (`|`) and job control.  
+- **Teaching-friendly:** demonstrates essential OS primitives with minimal surface area.
 
-Pedagogical: demonstrates classic OS primitives in a compact codebase.
+---
 
-:keyboard: Example Session
+## ⌨️ Example Session
+
+```text
 /home/codio> pwd
 /home/codio
 /home/codio> echo hello $USER
@@ -194,25 +220,27 @@ hello codio
 /home/codio> cat shell.c > out.txt
 /home/codio> more < out.txt
 ...
+```
 
-:framed_picture: Illustration Placeholder
+---
 
-Drop your diagram here (e.g., a flowchart of the main loop, or a state machine for signal/timeout handling).
+## 🖼️ Illustration Placeholder
 
-:checkered_flag: Conclusion
+> **Insert your diagram here** — e.g., a flowchart of the main loop or a small state machine for timeout/signal handling.
 
-Over the course of the project, Quash grew from a bare prompt into a functional shell that:
+---
 
-runs foreground and background jobs
+## 🏁 Conclusion
 
-responds sanely to Ctrl-C
+Across iterations, Quash evolved from a simple prompt into a practical shell that:
 
-enforces a 10-second limit on foreground tasks
+- runs foreground and background jobs
+- handles `Ctrl-C` sensibly
+- enforces a 10‑second cap on foreground tasks
+- supports `<` / `>` redirection
 
-redirects input/output with < and >
+The emphasis on modularity, POSIX calls, and transparent control flow makes Quash both an effective learning tool and a solid foundation for future upgrades (pipelines, job control, history, completion).
 
-The emphasis on modular functions, POSIX calls, and clear control flow makes Quash a solid teaching tool and a good base for future upgrades (pipelines, job control, history, completion).
+---
 
-End of Report
-
-If you want this as a pre-styled README.md file, say the word and I’ll generate the file for download.
+_End of Report_
